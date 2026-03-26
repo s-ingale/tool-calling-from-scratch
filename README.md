@@ -82,14 +82,14 @@ Each tool has a 3-second delay so you can visually track the execution in the UI
 
 - [uv](https://docs.astral.sh/uv/) — Python package manager
 - [Ollama](https://ollama.com/) — local LLM runtime
-- **qwen3:8b** model (~5.2 GB) — a thinking model with native tool calling support. We use a thinking model so you can see the model's internal reasoning (the `<think>` chain) before it decides which tool to call.
+- **qwen3:4b** model (~2.5 GB) — a thinking model with native tool calling support. We use a thinking model so you can see the model's internal reasoning (the `<think>` chain) before it decides which tool to call.
 
 ## Setup
 
 Pull the model:
 
 ```bash
-ollama pull qwen3:8b
+ollama pull qwen3:4b
 ```
 
 That's it. `uv` handles the Python environment and dependencies automatically.
