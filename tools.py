@@ -1,7 +1,10 @@
 import asyncio
 import json
 
-# --- Tool Definitions (JSON schemas sent to the LLM) ---
+# --- Tool Definitions ---
+# These schemas serve two purposes:
+# 1. They are injected into the system prompt as text (for custom parsing)
+# 2. They document the expected parameters for each tool
 
 TOOL_SCHEMAS = [
     {
@@ -81,6 +84,35 @@ TOOL_SCHEMAS = [
         },
     },
 ]
+
+
+def build_tools_system_prompt() -> str:
+    """Generate the part of the system prompt that tells the model about tools."""
+    tool_defs = ""
+    for schema in TOOL_SCHEMAS:
+        func = schema["function"]
+        tool_defs += json.dumps({"type": "function", "function": func}) + "\n"
+
+    return (
+        "# Tools\n\n"
+        "You have access to the following tools. To call a tool, output a "
+        "tool_call block in EXACTLY this format:\n\n"
+        "<tool_call>\n"
+        '{"name": "<function-name>", "arguments": {<args-json-object>}}\n'
+        "</tool_call>\n\n"
+        "You may call multiple tools by outputting multiple <tool_call> blocks.\n"
+        "You may output text before or between tool calls to explain your reasoning.\n"
+        "IMPORTANT: Always use valid JSON inside <tool_call> blocks.\n\n"
+        "Available tools:\n"
+        f"{tool_defs}\n"
+        "When you receive a <tool_response>, use its content to formulate your "
+        "final answer to the user."
+    )
+
+
+def format_tool_result(tool_name: str, result: str) -> str:
+    """Format a tool result to inject back into the conversation."""
+    return f"<tool_response>\n{tool_name}: {result}\n</tool_response>"
 
 
 # --- Tool Implementations (stubs with 3-sec delay) ---

@@ -218,6 +218,16 @@ header h1 { font-size: 18px; font-weight: 600; color: #fff; }
   background: #243a4f;
 }
 
+/* Raw tool call stream — shows the model writing <tool_call> tokens live */
+.raw-tool-stream {
+  background: #1a0d20 !important;
+  border-color: #2a1a3a !important;
+  color: #c084fc !important;
+  max-height: 200px;
+  overflow-y: auto;
+  font-size: 12px !important;
+}
+
 /* LLM input dump */
 .llm-input-dump {
   background: #0a1520 !important;

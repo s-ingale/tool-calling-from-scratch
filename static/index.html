@@ -85,6 +85,9 @@
       let currentThinkStream = null;
       let currentGenStep = null;
       let currentStreamEl = null;
+      let currentRawStep = null;
+      let currentRawStream = null;
+      let rawToolContent = "";
 
       try {
         const response = await fetch("/api/chat", {
@@ -120,6 +123,34 @@
             try { data = JSON.parse(dataStr); } catch { continue; }
 
             switch (currentEvent) {
+
+              case "llm_input": {
+                stepCounter++;
+                const llmInputStep = addStep(
+                  timeline,
+                  String(stepCounter),
+                  'Sending to LLM <button class="view-input-btn">View LLM Input</button>',
+                  "done"
+                );
+
+                const llmInputPre = document.createElement("pre");
+                llmInputPre.className = "llm-input-dump";
+                llmInputPre.style.display = "none";
+                llmInputPre.textContent = JSON.stringify(data.messages, null, 2);
+                llmInputStep.content.appendChild(llmInputPre);
+
+                const llmBtn = llmInputStep.title.querySelector(".view-input-btn");
+                llmBtn.addEventListener("click", (e) => {
+                  e.stopPropagation();
+                  const visible = llmInputPre.style.display !== "none";
+                  llmInputPre.style.display = visible ? "none" : "block";
+                  llmBtn.textContent = visible ? "View LLM Input" : "Hide LLM Input";
+                  scrollToBottom();
+                });
+
+                scrollToBottom();
+                break;
+              }
 
               case "thinking": {
                 // Create thinking step on first thinking token
@@ -166,7 +197,7 @@
                 break;
               }
 
-              case "tool_call": {
+              case "raw_tool_token": {
                 // Close thinking if active
                 if (isThinking && currentThinkStep) {
                   markStep(currentThinkStep, "done");
@@ -185,13 +216,40 @@
                   currentStreamEl = null;
                 }
 
+                // Create raw output step on first raw token
+                if (!currentRawStep) {
+                  stepCounter++;
+                  currentRawStep = addStep(timeline, String(stepCounter), "Model outputting tool call (raw tokens)...", "active");
+                  currentRawStream = document.createElement("pre");
+                  currentRawStream.className = "raw-tool-stream";
+                  currentRawStep.content.appendChild(currentRawStream);
+                  rawToolContent = "";
+                }
+
+                rawToolContent += data.content;
+                currentRawStream.textContent = rawToolContent;
+                currentRawStream.scrollTop = currentRawStream.scrollHeight;
+                scrollToBottom();
+                break;
+              }
+
+              case "tool_call": {
+                // Close raw output step
+                if (currentRawStep) {
+                  markStep(currentRawStep, "done");
+                  currentRawStep.title.innerHTML = `Step ${currentRawStep.num}: <span class="highlight">Raw tool call parsed</span>`;
+                  currentRawStep = null;
+                  currentRawStream = null;
+                  rawToolContent = "";
+                }
+
                 toolCallCounter++;
                 stepCounter++;
 
                 const tcStep = addStep(
                   timeline,
                   String(stepCounter),
-                  `Tool call: <span class="fn-name">${data.name}</span>`,
+                  `Parsed tool call: <span class="fn-name">${data.name}</span>`,
                   "done"
                 );
 
@@ -266,38 +324,14 @@
 
               case "tool_result_done": {
                 // Reset for next round
+                // (the llm_input event at the start of the next loop
+                //  will show the "View LLM Input" button automatically)
                 roundContent = "";
                 currentGenStep = null;
                 currentStreamEl = null;
-
-                // Add a "View LLM Input" step showing what goes into the LLM
-                if (data.llm_input) {
-                  stepCounter++;
-                  const inputStep = addStep(
-                    timeline,
-                    String(stepCounter),
-                    'Sending context back to LLM <button class="view-input-btn">View LLM Input</button>',
-                    "done"
-                  );
-
-                  const inputPre = document.createElement("pre");
-                  inputPre.className = "llm-input-dump";
-                  inputPre.style.display = "none";
-                  inputPre.textContent = JSON.stringify(data.llm_input, null, 2);
-                  inputStep.content.appendChild(inputPre);
-
-                  // Toggle on button click
-                  const btn = inputStep.title.querySelector(".view-input-btn");
-                  btn.addEventListener("click", (e) => {
-                    e.stopPropagation();
-                    const visible = inputPre.style.display !== "none";
-                    inputPre.style.display = visible ? "none" : "block";
-                    btn.textContent = visible ? "View LLM Input" : "Hide LLM Input";
-                    scrollToBottom();
-                  });
-                }
-
-                // Thinking step will be created when thinking tokens arrive
+                currentRawStep = null;
+                currentRawStream = null;
+                rawToolContent = "";
                 scrollToBottom();
                 break;
               }

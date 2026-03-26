@@ -7,7 +7,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from tools import TOOL_SCHEMAS, execute_tool
+from parser import StreamParser
+from tools import (
+    build_tools_system_prompt,
+    execute_tool,
+    format_tool_result,
+)
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -18,7 +23,8 @@ SYSTEM_PROMPT = (
     "You are a helpful personal assistant. "
     "You can send emails, schedule meetings, and cancel meetings. "
     "Use the provided tools when the user asks you to perform these actions. "
-    "Always confirm what you did after using a tool."
+    "Always confirm what you did after using a tool.\n\n"
+    + build_tools_system_prompt()
 )
 
 
@@ -42,15 +48,16 @@ async def chat(request: ChatRequest):
     SSE endpoint that streams the LLM response.
 
     Event types sent to the frontend:
-      - "token"        : a chunk of assistant text
-      - "tool_call"    : the LLM wants to call a tool (name + args)
-      - "tool_running" : tool execution has started
-      - "tool_result"  : tool execution finished (with result)
-      - "done"         : stream is complete
-      - "error"        : something went wrong
+      - "thinking"       : model's thinking tokens (from <think> blocks)
+      - "token"          : a chunk of assistant text
+      - "raw_tool_token" : raw tokens inside a <tool_call> block (visible parsing)
+      - "tool_call"      : parsed tool call (name + args)
+      - "tool_running"   : tool execution has started
+      - "tool_result"    : tool execution finished (with result)
+      - "tool_result_done": all tools done, context being sent back to LLM
+      - "done"           : stream is complete
+      - "error"          : something went wrong
     """
-
-    # Prepend system prompt to conversation
     messages = [{"role": "system", "content": SYSTEM_PROMPT}] + request.messages
 
     async def event_stream():
@@ -65,13 +72,21 @@ async def chat(request: ChatRequest):
 
 async def _run_chat_loop(messages: list[dict]):
     """
-    Core loop: send messages to Ollama, stream tokens, handle tool calls,
-    feed results back, and repeat until the model gives a final text answer.
+    Core loop: send messages to Ollama, stream tokens through our custom
+    parser, detect tool calls, execute them, feed results back, repeat.
+
+    NO native Ollama tool calling — we parse <tool_call> tags ourselves.
     """
     while True:
-        # Collect the full assistant response while streaming tokens
         assistant_content = ""
         tool_calls = []
+        parser = StreamParser()
+
+        # Send the full context to the frontend before each LLM call
+        yield {
+            "event": "llm_input",
+            "data": json.dumps({"messages": messages}),
+        }
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             async with client.stream(
@@ -80,7 +95,7 @@ async def _run_chat_loop(messages: list[dict]):
                 json={
                     "model": MODEL,
                     "messages": messages,
-                    "tools": TOOL_SCHEMAS,
+                    # NO "tools" parameter — we handle it ourselves
                     "stream": True,
                     "think": True,
                 },
@@ -93,11 +108,8 @@ async def _run_chat_loop(messages: list[dict]):
 
                     chunk = json.loads(line)
                     msg = chunk.get("message", {})
-                    # Debug: log raw chunks to terminal
-                    if msg.get("tool_calls") or msg.get("thinking") or chunk.get("done"):
-                        print(f"[DEBUG] chunk: {json.dumps(chunk)[:300]}")
 
-                    # Stream thinking tokens (reasoning chain)
+                    # Stream thinking tokens
                     thinking = msg.get("thinking", "")
                     if thinking:
                         yield {
@@ -105,71 +117,89 @@ async def _run_chat_loop(messages: list[dict]):
                             "data": json.dumps({"content": thinking}),
                         }
 
-                    # Stream text tokens to the frontend
+                    # Feed content tokens through our parser
                     content = msg.get("content", "")
                     if content:
                         assistant_content += content
-                        yield {
-                            "event": "token",
-                            "data": json.dumps({"content": content}),
-                        }
+                        for event_type, event_data in parser.feed(content):
+                            if event_type == "text":
+                                yield {
+                                    "event": "token",
+                                    "data": json.dumps({"content": event_data}),
+                                }
+                            elif event_type == "tag_open":
+                                yield {
+                                    "event": "raw_tool_token",
+                                    "data": json.dumps({"content": event_data, "type": "open"}),
+                                }
+                            elif event_type == "tag_buffer":
+                                yield {
+                                    "event": "raw_tool_token",
+                                    "data": json.dumps({"content": event_data, "type": "buffer"}),
+                                }
+                            elif event_type == "tool_call":
+                                tool_calls.append(event_data)
+                                yield {
+                                    "event": "tool_call",
+                                    "data": json.dumps({
+                                        "name": event_data.name,
+                                        "arguments": event_data.arguments,
+                                    }),
+                                }
+                            elif event_type == "parse_error":
+                                yield {
+                                    "event": "error",
+                                    "data": json.dumps({"error": event_data}),
+                                }
 
-                    # Collect tool calls (arrive as a single chunk)
-                    if msg.get("tool_calls"):
-                        tool_calls.extend(msg["tool_calls"])
+        # Flush any remaining buffered content
+        for event_type, event_data in parser.flush():
+            if event_type == "text":
+                yield {
+                    "event": "token",
+                    "data": json.dumps({"content": event_data}),
+                }
+            elif event_type == "parse_error":
+                yield {
+                    "event": "error",
+                    "data": json.dumps({"error": event_data}),
+                }
 
-        # If no tool calls, we're done — the model gave a final answer
+        # If no tool calls, we're done
         if not tool_calls:
             yield {"event": "done", "data": json.dumps({"finished": True})}
             return
 
         # --- Tool call handling ---
 
-        # Append the assistant's message (with tool_calls) to history
+        # Append the assistant's raw message to history
         messages.append({
             "role": "assistant",
             "content": assistant_content,
-            "tool_calls": tool_calls,
         })
 
         # Execute each tool call and feed results back
         for tc in tool_calls:
-            func = tc["function"]
-            tool_name = func["name"]
-            tool_args = func["arguments"]
-
-            # Tell the frontend which tool is being called
-            yield {
-                "event": "tool_call",
-                "data": json.dumps({"name": tool_name, "arguments": tool_args}),
-            }
-
-            # Tell the frontend tool is now running
             yield {
                 "event": "tool_running",
-                "data": json.dumps({"name": tool_name}),
+                "data": json.dumps({"name": tc.name}),
             }
 
-            # Execute the tool (3-sec delay built in)
-            result = await execute_tool(tool_name, tool_args)
+            result = await execute_tool(tc.name, tc.arguments)
 
-            # Tell the frontend the result
             yield {
                 "event": "tool_result",
-                "data": json.dumps({"name": tool_name, "result": json.loads(result)}),
+                "data": json.dumps({"name": tc.name, "result": json.loads(result)}),
             }
 
-            # Append tool result to conversation history for the LLM
+            # Append tool result as a user message with our custom format
+            # (since we're not using Ollama's native tool role)
             messages.append({
-                "role": "tool",
-                "content": result,
-                "tool_name": tool_name,
+                "role": "user",
+                "content": format_tool_result(tc.name, result),
             })
 
-        # Signal the frontend that all tool results are in
-        # and the LLM is about to process them.
-        # Include the full messages array so the UI can show
-        # exactly what context is being sent to the LLM.
+        # Send the full context to the frontend
         yield {
             "event": "tool_result_done",
             "data": json.dumps({
@@ -178,6 +208,4 @@ async def _run_chat_loop(messages: list[dict]):
             }),
         }
 
-        # Clear tool_calls and loop back — the LLM will now see the tool
-        # results and either call more tools or give a final answer
         tool_calls = []
