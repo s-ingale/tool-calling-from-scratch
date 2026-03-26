@@ -201,6 +201,33 @@ header h1 { font-size: 18px; font-weight: 600; color: #fff; }
   font-style: italic;
 }
 
+/* View LLM Input button */
+.view-input-btn {
+  background: #1a2a3a;
+  color: #7dd3fc;
+  border: 1px solid #2a3a4a;
+  border-radius: 6px;
+  padding: 2px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  margin-left: 8px;
+  font-weight: 500;
+}
+
+.view-input-btn:hover {
+  background: #243a4f;
+}
+
+/* LLM input dump */
+.llm-input-dump {
+  background: #0a1520 !important;
+  border-color: #1a2a3a !important;
+  max-height: 400px;
+  overflow-y: auto;
+  font-size: 11px !important;
+  color: #7dd3fc !important;
+}
+
 /* Thinking: scrollable box so it doesn't push everything off-screen */
 .step-content .thinking-stream {
   color: #7dd3fc;

@@ -269,6 +269,34 @@
                 roundContent = "";
                 currentGenStep = null;
                 currentStreamEl = null;
+
+                // Add a "View LLM Input" step showing what goes into the LLM
+                if (data.llm_input) {
+                  stepCounter++;
+                  const inputStep = addStep(
+                    timeline,
+                    String(stepCounter),
+                    'Sending context back to LLM <button class="view-input-btn">View LLM Input</button>',
+                    "done"
+                  );
+
+                  const inputPre = document.createElement("pre");
+                  inputPre.className = "llm-input-dump";
+                  inputPre.style.display = "none";
+                  inputPre.textContent = JSON.stringify(data.llm_input, null, 2);
+                  inputStep.content.appendChild(inputPre);
+
+                  // Toggle on button click
+                  const btn = inputStep.title.querySelector(".view-input-btn");
+                  btn.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    const visible = inputPre.style.display !== "none";
+                    inputPre.style.display = visible ? "none" : "block";
+                    btn.textContent = visible ? "View LLM Input" : "Hide LLM Input";
+                    scrollToBottom();
+                  });
+                }
+
                 // Thinking step will be created when thinking tokens arrive
                 scrollToBottom();
                 break;
