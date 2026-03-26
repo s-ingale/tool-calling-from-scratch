@@ -167,10 +167,15 @@ async def _run_chat_loop(messages: list[dict]):
             })
 
         # Signal the frontend that all tool results are in
-        # and the LLM is about to process them
+        # and the LLM is about to process them.
+        # Include the full messages array so the UI can show
+        # exactly what context is being sent to the LLM.
         yield {
             "event": "tool_result_done",
-            "data": json.dumps({"message": "All tool results collected, sending back to LLM"}),
+            "data": json.dumps({
+                "message": "All tool results collected, sending back to LLM",
+                "llm_input": messages,
+            }),
         }
 
         # Clear tool_calls and loop back — the LLM will now see the tool
