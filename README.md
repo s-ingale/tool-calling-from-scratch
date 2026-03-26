@@ -1,19 +1,25 @@
 # Tool Calling from Scratch
 
-Implements LLM tool calling from scratch — no frameworks, no magic. Uses a local Ollama model to make the entire orchestration loop visible in the UI: thinking, tool calls, execution, and results.
+Implements LLM tool calling **truly from scratch** — no native tool calling APIs, no frameworks. We inject tool definitions into the system prompt, the model outputs `<tool_call>` XML tags as raw text, and we parse them ourselves in real-time as tokens stream in.
 
-## How Tool Calling Works
+## How It Works
 
-LLMs don't execute tools. They output structured text indicating which tool to call. Your code executes it and feeds the result back.
+1. **System prompt** tells the model what tools exist and to use `<tool_call>{"name": "...", "arguments": {...}}</tool_call>` format
+2. Model generates tokens — our **stream parser** watches for `<tool_call>` tags incrementally as tokens arrive one at a time
+3. Once `</tool_call>` is detected, we **parse the JSON** and execute the tool
+4. Tool result is injected back into the conversation as a `<tool_response>` message
+5. Loop back to the model until it gives a final text answer
 
-**Old way:** Prompt the model to output a specific format, regex-match it, parse manually. Fragile.
+The UI makes every step visible: thinking chain, raw model output (watch it write the JSON character by character), parsed tool call, execution with timer, and the full context sent to the LLM at each round (click "View LLM Input").
 
-**Modern way (what we use):** Send tool schemas in the API request. Ollama intercepts the model's raw tool-call tokens, parses them, and returns clean structured `tool_calls` in the response. You never see the raw tokens — the API layer handles detection and parsing. Same approach as OpenAI, Anthropic, etc.
+### Why not use Ollama's native tool calling?
+
+Ollama (and OpenAI, Anthropic, etc.) have built-in tool calling that intercepts the model's raw tokens, parses them, and returns clean structured data. We deliberately skip that to understand the layer underneath — the same layer those APIs implement internally.
 
 ## Prerequisites
 
 - [uv](https://docs.astral.sh/uv/)
-- [Ollama](https://ollama.com/) with `qwen3:4b` (~2.5 GB, thinking model — so you can see the reasoning chain before tool calls)
+- [Ollama](https://ollama.com/) with `qwen3:4b` (~2.5 GB, thinking model)
 
 ```bash
 ollama pull qwen3:4b
@@ -32,11 +38,15 @@ open http://localhost:8000
 ## Architecture
 
 ```
-Browser → SSE stream → FastAPI → Ollama (qwen3:4b)
-                                    ↓ tool_calls
-                              Tool Registry (tools.py)
-                                    ↓ 3-sec stub execution
-                              Result fed back to Ollama → streamed to browser
+Browser → SSE stream → FastAPI → Stream Parser → Ollama (qwen3:4b)
+                                      ↓
+                          detects <tool_call> tags in raw token stream
+                                      ↓
+                          parses JSON, executes tool (3-sec stub)
+                                      ↓
+                          injects <tool_response> into conversation
+                                      ↓
+                          loops back to Ollama → streams to browser
 ```
 
 ## Tools (Stubs)
@@ -52,8 +62,9 @@ Browser → SSE stream → FastAPI → Ollama (qwen3:4b)
 ## Project Structure
 
 ```
-main.py             # FastAPI backend — SSE streaming + tool call loop
-tools.py            # Tool schemas (JSON) + stub implementations (3-sec delay)
+main.py             # FastAPI backend — SSE streaming + tool call orchestration
+parser.py           # Real-time stream parser — detects <tool_call> tags incrementally
+tools.py            # Tool schemas, system prompt builder, stub implementations
 static/index.html   # Chat UI with orchestration pipeline
 static/styles.css   # Styles
 start.sh            # Start script (checks Ollama, runs uvicorn)
